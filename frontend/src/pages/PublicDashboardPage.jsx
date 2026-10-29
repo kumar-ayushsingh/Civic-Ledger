@@ -790,7 +790,12 @@ export default function PublicDashboardPage() {
             </div>
 
             {/* Scrollable Feed */}
-            <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1" id="cases-feed-container">
+            <div
+              className="space-y-3 max-h-[500px] overflow-y-auto pr-1 focus:outline-hidden"
+              id="cases-feed-container"
+              tabIndex={0}
+              aria-label="Live complaints feed"
+            >
               {filteredCases.length === 0 ? (
                 <p className="text-xs text-slate-400 text-center py-8 font-medium">
                   {t('dashboard.noCases')}
@@ -973,8 +978,10 @@ export default function PublicDashboardPage() {
 
             {/* Code / Hash Stream (Polled Live Every 3s) */}
             <div
-              className="font-mono text-[11px] space-y-2 bg-slate-950 p-3 rounded-xl border border-slate-800/80 max-h-48 overflow-y-auto"
+              className="font-mono text-[11px] space-y-2 bg-slate-950 p-3 rounded-xl border border-slate-800/80 max-h-48 overflow-y-auto focus:outline-hidden"
               id="ledger-stream"
+              tabIndex={0}
+              aria-label="Tamper-evident ledger stream"
             >
               {ledgerEvents.map((ev) => (
                 <div

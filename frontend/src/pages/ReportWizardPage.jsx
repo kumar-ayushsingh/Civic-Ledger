@@ -326,9 +326,26 @@ export default function ReportWizardPage() {
   };
 
   const handleUseDemoLocation = () => {
-    setCoords({ lat: 28.4095, lng: 77.3180 });
-    setLocationLabel('Sector 14 Main Commercial Avenue, Ward 14');
-    setLocationWard('Ward 14 (Old Faridabad & Central Sector)');
+    let demoLat = 28.4095;
+    let demoLng = 77.3180;
+    let label = 'Sector 14 Main Commercial Avenue, Ward 14';
+    let ward = 'Ward 14 (Old Faridabad & Central Sector)';
+
+    const saved = localStorage.getItem('civicledger_demo_gps');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed.lat && parsed.lng) {
+          demoLat = parsed.lat;
+          demoLng = parsed.lng;
+          if (parsed.name) label = parsed.name;
+        }
+      } catch (e) {}
+    }
+
+    setCoords({ lat: demoLat, lng: demoLng });
+    setLocationLabel(label);
+    setLocationWard(ward);
     setLocationState('demo');
     setLocationError(null);
   };
@@ -1228,7 +1245,7 @@ export default function ReportWizardPage() {
           {/* QR Code & Tracking Link */}
           <div className="pt-3 border-t border-slate-100 text-center space-y-3">
             <div className="p-3 bg-slate-50 rounded-2xl inline-block border border-slate-200">
-              <QRCodeSVG value={trackingUrl} size={130} />
+              <QRCodeSVG value={trackingUrl} size={130} title="QR code for tracking this case" aria-label="QR code for tracking this case" />
             </div>
             <p className="text-[11px] text-slate-500 font-medium">
               {t('wizard.qrNotice')}

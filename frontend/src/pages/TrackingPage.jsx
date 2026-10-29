@@ -405,7 +405,7 @@ export default function TrackingPage() {
         {/* QR Code & Navigation Strip */}
         <div className="rounded-3xl border border-slate-200 bg-white p-5 text-center space-y-4">
           <div className="p-3 bg-slate-50 rounded-2xl inline-block border border-slate-200">
-            <QRCodeSVG value={currentUrl} size={110} />
+            <QRCodeSVG value={currentUrl} size={110} title="QR code for tracking this case" aria-label="QR code for tracking this case" />
           </div>
           <p className="text-[11px] text-slate-500 font-medium">
             {t('track.qrScan')}

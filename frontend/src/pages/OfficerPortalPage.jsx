@@ -315,9 +315,23 @@ export default function OfficerPortalPage() {
         formData.append('after_photo', capturedBlob, photoFilename || 'after_photo.jpg');
       }
 
-      // Default lat/lng to case coordinates
-      formData.append('lat', closureModalCase.latitude);
-      formData.append('lng', closureModalCase.longitude);
+      // Default lat/lng to case coordinates or active demo GPS preset
+      let subLat = closureModalCase.latitude;
+      let subLng = closureModalCase.longitude;
+      if (!shortcutPreset) {
+        const savedGps = localStorage.getItem('civicledger_demo_gps');
+        if (savedGps) {
+          try {
+            const parsed = JSON.parse(savedGps);
+            if (parsed.lat && parsed.lng) {
+              subLat = parsed.lat;
+              subLng = parsed.lng;
+            }
+          } catch (e) {}
+        }
+      }
+      formData.append('lat', subLat);
+      formData.append('lng', subLng);
       if (clockInfo?.sim_now) {
         formData.append('captured_at', clockInfo.sim_now);
       }
@@ -546,8 +560,12 @@ export default function OfficerPortalPage() {
 
           {/* Sort Controls */}
           <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-slate-500">{t('officer.sortBy')}</span>
+            <label htmlFor="sort-queue-select" className="text-xs font-bold text-slate-500">
+              {t('officer.sortBy')}
+            </label>
             <select
+              id="sort-queue-select"
+              aria-label={t('officer.sortBy') || 'Sort queue by'}
               value={sortOption}
               onChange={(e) => setSortOption(e.target.value)}
               className="text-xs font-bold text-slate-700 bg-slate-50 border border-slate-200 rounded-full px-3 py-1 focus:outline-none focus:border-sky-500"

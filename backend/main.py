@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import DATA_DIR, EVIDENCE_STORE_DIR, Base, SessionLocal, engine, get_db
-from detector import detect
+from detector import detect, get_demo_override, set_demo_override, MODEL_PATH
 from ledger import append_event, create_anchor, verify_against_anchors, verify_chain
 from models import (
     Anchor,
@@ -59,6 +59,8 @@ from workflow import (
 # Initialize database schema
 Base.metadata.create_all(bind=engine)
 
+IS_RESETTING = False
+
 
 # ---------------- BACKGROUND DEADLINE EVALUATOR LOOP ----------------
 async def background_deadline_evaluator():
@@ -69,7 +71,7 @@ async def background_deadline_evaluator():
     while True:
         try:
             await asyncio.sleep(2)
-            if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("CIVICLEDGER_TEST"):
+            if IS_RESETTING or os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("CIVICLEDGER_TEST"):
                 continue
             db: Session = SessionLocal()
             try:
@@ -1663,9 +1665,14 @@ def simulate_tamper(req: Optional[TamperRequest] = None, db: Session = Depends(g
 
 @app.post("/api/demo/reset")
 def reset_demo_state(db: Session = Depends(get_db)):
-    t_start = datetime.datetime.utcnow()
-    v_result = reset_seed_data(db)
-    duration_sec = (datetime.datetime.utcnow() - t_start).total_seconds()
+    global IS_RESETTING
+    IS_RESETTING = True
+    try:
+        t_start = datetime.datetime.utcnow()
+        v_result = reset_seed_data(db)
+        duration_sec = (datetime.datetime.utcnow() - t_start).total_seconds()
+    finally:
+        IS_RESETTING = False
 
     return {
         "ok": True,
@@ -1673,6 +1680,75 @@ def reset_demo_state(db: Session = Depends(get_db)):
         "total_blocks": v_result["checked"],
         "chain_valid": v_result["valid"],
         "message": f"Database rebuilt to clean seed state in {duration_sec:.2f} seconds.",
+    }
+
+
+@app.get("/api/demo/status")
+def get_demo_status(db: Session = Depends(get_db)):
+    clock_dt = get_sim_now(db)
+    override = get_demo_override()
+    yolo_available = os.path.exists(MODEL_PATH)
+    active_mode = "yolo" if yolo_available else ("mock-override" if override else "mock")
+    v_result = verify_chain(db)
+    total_events = db.query(Event).count()
+    return {
+        "clock": {
+            "iso": clock_dt.isoformat(),
+            "formatted": clock_dt.strftime("%d %b %Y, %I:%M %p"),
+        },
+        "detector": {
+            "mode": active_mode,
+            "yolo_model_available": yolo_available,
+            "yolo_model_path": MODEL_PATH,
+            "override_active": bool(override),
+            "override_data": override,
+        },
+        "simulated_gps_presets": {
+            "reported_spot": {"lat": 28.4095, "lng": 77.3180, "name": "Sector 14 Avenue (Within 25m site)"},
+            "away_500m": {"lat": 28.4140, "lng": 77.3220, "name": "500m Away (Beyond 25m tolerance)"},
+        },
+        "ledger": {
+            "total_blocks": total_events,
+            "valid": v_result["valid"],
+            "first_broken_sequence": v_result.get("first_broken_sequence"),
+        },
+    }
+
+
+class DetectorOverrideRequest(BaseModel):
+    defect_present: Optional[bool] = None
+    defect_type: Optional[str] = "pothole"
+    confidence: Optional[float] = 0.88
+    clear: Optional[bool] = False
+
+
+@app.post("/api/demo/detector-override")
+def post_detector_override(req: DetectorOverrideRequest):
+    if req.clear or req.defect_present is None:
+        set_demo_override(None)
+        return {"ok": True, "override": None, "message": "Detector override cleared; running in default mode."}
+
+    if req.defect_present:
+        override = {
+            "type": req.defect_type or "pothole",
+            "confidence": float(req.confidence or 0.88),
+            "bbox": [0.2, 0.3, 0.7, 0.75],
+            "area_ratio": 0.18,
+            "mode": "mock",
+        }
+    else:
+        override = {
+            "type": "clean",
+            "confidence": 0.04,
+            "bbox": None,
+            "area_ratio": 0.0,
+            "mode": "mock",
+        }
+    set_demo_override(override)
+    return {
+        "ok": True,
+        "override": override,
+        "message": f"Detector override active: defect_present={req.defect_present}",
     }
 
 

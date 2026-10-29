@@ -1,0 +1,86 @@
+[
+  {
+    "page": "Landing Page",
+    "url": "http://127.0.0.1:5173/",
+    "passesCount": 20,
+    "violationsCount": 1,
+    "violations": [
+      {
+        "id": "color-contrast",
+        "impact": "serious",
+        "help": "Elements must meet minimum color contrast ratio thresholds",
+        "nodes": 1
+      }
+    ]
+  },
+  {
+    "page": "Citizen Report Wizard",
+    "url": "http://127.0.0.1:5173/app/report",
+    "passesCount": 21,
+    "violationsCount": 1,
+    "violations": [
+      {
+        "id": "color-contrast",
+        "impact": "serious",
+        "help": "Elements must meet minimum color contrast ratio thresholds",
+        "nodes": 2
+      }
+    ]
+  },
+  {
+    "page": "Public Tracking Timeline",
+    "url": "http://127.0.0.1:5173/track/CAS-8901",
+    "passesCount": 20,
+    "violationsCount": 1,
+    "violations": [
+      {
+        "id": "color-contrast",
+        "impact": "serious",
+        "help": "Elements must meet minimum color contrast ratio thresholds",
+        "nodes": 6
+      }
+    ]
+  },
+  {
+    "page": "Public Dashboard & Ledger",
+    "url": "http://127.0.0.1:5173/app/ledger",
+    "passesCount": 21,
+    "violationsCount": 1,
+    "violations": [
+      {
+        "id": "color-contrast",
+        "impact": "serious",
+        "help": "Elements must meet minimum color contrast ratio thresholds",
+        "nodes": 91
+      }
+    ]
+  },
+  {
+    "page": "Officer Management Portal",
+    "url": "http://127.0.0.1:5173/app/officer",
+    "passesCount": 24,
+    "violationsCount": 1,
+    "violations": [
+      {
+        "id": "color-contrast",
+        "impact": "serious",
+        "help": "Elements must meet minimum color contrast ratio thresholds",
+        "nodes": 37
+      }
+    ]
+  },
+  {
+    "page": "Demo Control Panel",
+    "url": "http://127.0.0.1:5173/demo",
+    "passesCount": 21,
+    "violationsCount": 1,
+    "violations": [
+      {
+        "id": "color-contrast",
+        "impact": "serious",
+        "help": "Elements must meet minimum color contrast ratio thresholds",
+        "nodes": 8
+      }
+    ]
+  }
+]
