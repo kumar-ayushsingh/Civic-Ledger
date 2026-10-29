@@ -1,0 +1,109 @@
+@import '@fontsource/inter/300.css';
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+@import '@fortawesome/fontawesome-free/css/all.min.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --base-font-size: 16px;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #f8fafc;
+  color: #334155;
+  font-size: var(--base-font-size);
+}
+
+/* Text Size Variations */
+html.text-size-a {
+  --base-font-size: 16px;
+}
+html.text-size-aplus {
+  --base-font-size: 18px;
+}
+html.text-size-aplusplus {
+  --base-font-size: 20px;
+}
+
+/* High Contrast Mode */
+html.high-contrast {
+  filter: contrast(1.15);
+}
+html.high-contrast body {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+html.high-contrast .bg-white {
+  background-color: #ffffff !important;
+  border-color: #0f172a !important;
+}
+html.high-contrast .bg-slate-50 {
+  background-color: #ffffff !important;
+}
+html.high-contrast .text-slate-500,
+html.high-contrast .text-slate-600,
+html.high-contrast .text-slate-400 {
+  color: #1e293b !important;
+}
+html.high-contrast .border-slate-200,
+html.high-contrast .border-slate-100 {
+  border-color: #475569 !important;
+}
+
+/* Custom scrollbar for clean UI */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Circle tag Pulse Animation */
+.pulse-circle {
+  box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.7);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 8px rgba(56, 189, 248, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0);
+  }
+}
+
+/* Accessible focus ring */
+:focus-visible {
+  outline: 3px solid #0284c7;
+  outline-offset: 2px;
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
