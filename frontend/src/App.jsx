@@ -5,7 +5,7 @@ import Header from './components/Header';
 import Footer from './components/Footer';
 import LandingPage from './pages/LandingPage';
 import AppShell from './pages/AppShell';
-import LedgerStubPage from './pages/LedgerStubPage';
+import PublicDashboardPage from './pages/PublicDashboardPage';
 import ReportWizardPage from './pages/ReportWizardPage';
 import OfficerPortalPage from './pages/OfficerPortalPage';
 import TrackingPage from './pages/TrackingPage';
@@ -45,7 +45,7 @@ export default function App() {
             element={<AppShell onLaunch={() => setIsLaunchModalOpen(true)} />}
           >
             <Route index element={<Navigate to="/app/ledger" replace />} />
-            <Route path="ledger" element={<LedgerStubPage />} />
+            <Route path="ledger" element={<PublicDashboardPage />} />
             <Route path="report" element={<ReportWizardPage />} />
             <Route path="officer" element={<OfficerPortalPage />} />
           </Route>

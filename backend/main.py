@@ -586,6 +586,16 @@ def get_cases(
             if c.contract and c.contract.contractor
             else "Department Direct Team"
         )
+        before_img = None
+        after_img = None
+        ev_hash = None
+        for ev in (c.evidence or []):
+            if ev.evidence_type in ["original", "supporting"] and not before_img:
+                before_img = ev.file_path if ev.file_path.startswith("/") else f"/{ev.file_path}"
+                ev_hash = ev.sha256_hash
+            elif ev.evidence_type == "after_repair" and not after_img:
+                after_img = ev.file_path if ev.file_path.startswith("/") else f"/{ev.file_path}"
+
         results.append({
             "id": c.id,
             "title": c.title,
@@ -603,6 +613,9 @@ def get_cases(
             "latitude": c.latitude,
             "longitude": c.longitude,
             "address": c.address,
+            "before_image": before_img,
+            "after_image": after_img,
+            "evidence_hash": ev_hash,
             "opened_at": c.opened_at.isoformat() if c.opened_at else None,
             "acknowledged_at": c.acknowledged_at.isoformat() if c.acknowledged_at else None,
             "resolved_at": c.resolved_at.isoformat() if c.resolved_at else None,

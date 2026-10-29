@@ -10,12 +10,28 @@ export default defineConfig({
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
+      '/evidence_store': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
+      '/samples': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
     },
   },
   preview: {
     port: 5173,
     proxy: {
       '/api': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
+      '/evidence_store': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
+      '/samples': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
