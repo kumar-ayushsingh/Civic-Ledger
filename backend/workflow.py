@@ -771,6 +771,28 @@ def generate_case_timeline(
         },
     ]
 
+    # Check for rejected closure attempts logged in ledger
+    rejected_events = (
+        db.query(Event)
+        .filter(Event.case_id == c.id, Event.event_type == "CLOSURE_REJECTED")
+        .order_by(Event.sequence.asc())
+        .all()
+    )
+    rejected_attempts = []
+    for rev in rejected_events:
+        payload = (
+            rev.payload
+            if isinstance(rev.payload, dict)
+            else json.loads(rev.payload or "{}")
+        )
+        rejected_attempts.append({
+            "sequence": rev.sequence,
+            "timestamp": rev.timestamp.isoformat() if rev.timestamp else None,
+            "failed_rules": payload.get("failed_rules", []),
+            "reasons_en": payload.get("reasons_en", []),
+            "reasons_hi": payload.get("reasons_hi", []),
+        })
+
     return {
         "case_id": c.id,
         "current_holder_en": f"{dept_name} ({level_en})",
@@ -781,6 +803,7 @@ def generate_case_timeline(
         "current_escalation_level": c.current_escalation_level,
         "contractor_liability": c.contractor_liability,
         "steps": steps,
+        "rejected_attempts": rejected_attempts,
     }
 
 

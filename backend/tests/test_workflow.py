@@ -356,7 +356,143 @@ def test_reopen_and_tracking_endpoints(client: TestClient, db_session):
 
 
 # ============================================================================
-# 9. TEST CRYPTOGRAPHIC LEDGER CHAIN INTEGRITY AFTER ALL ACTIONS
+# 9. TEST REAL CLOSURE VERIFICATION ENGINE (4 RULES & DEMO SHORTCUTS)
+# ============================================================================
+def test_closure_rejection_gps_mismatch(client: TestClient, db_session):
+    c = db_session.query(Case).filter(Case.status != "Resolved").first()
+    assert c is not None
+
+    res = client.post(f"/api/cases/{c.id}/closure", data={"demo_preset": "wrong_location"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is False
+    assert data["verified"] is False
+    # Rule 1 (GPS) must fail
+    rule1 = next(r for r in data["rules"] if r["rule"] == 1)
+    assert rule1["passed"] is False
+    assert "GPS verification failed" in rule1["reason_en"]
+    assert "reasons_hi" in data and len(data["reasons_hi"]) > 0
+
+    # Case remains unresolved
+    db_session.refresh(c)
+    assert c.status != "Resolved"
+
+    # Last ledger event for case is CLOSURE_REJECTED
+    last_event = (
+        db_session.query(Event)
+        .filter(Event.case_id == c.id)
+        .order_by(Event.sequence.desc())
+        .first()
+    )
+    assert last_event.event_type == "CLOSURE_REJECTED"
+
+
+def test_closure_rejection_stale_timestamp(client: TestClient, db_session):
+    c = db_session.query(Case).filter(Case.status != "Resolved").first()
+    assert c is not None
+
+    res = client.post(f"/api/cases/{c.id}/closure", data={"demo_preset": "stale_timestamp"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is False
+    assert data["verified"] is False
+    # Rule 2 (Timestamp) must fail
+    rule2 = next(r for r in data["rules"] if r["rule"] == 2)
+    assert rule2["passed"] is False
+    assert "Live capture verification failed" in rule2["reason_en"]
+
+
+def test_closure_rejection_reused_photo(client: TestClient, db_session):
+    c = db_session.query(Case).filter(Case.status != "Resolved").first()
+    assert c is not None
+
+    res = client.post(f"/api/cases/{c.id}/closure", data={"demo_preset": "reuse_old_photo"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is False
+    assert data["verified"] is False
+    # Rule 3 (No Photo Reuse) must fail
+    rule3 = next(r for r in data["rules"] if r["rule"] == 3)
+    assert rule3["passed"] is False
+    assert "Image reuse detected" in rule3["reason_en"]
+
+
+def test_closure_rejection_defect_still_visible(client: TestClient, db_session):
+    c = db_session.query(Case).filter(Case.status != "Resolved").first()
+    assert c is not None
+
+    res = client.post(f"/api/cases/{c.id}/closure", data={"demo_preset": "defect_still_visible"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is False
+    assert data["verified"] is False
+    # Rule 4 (AI Defect Clearance) must fail
+    rule4 = next(r for r in data["rules"] if r["rule"] == 4)
+    assert rule4["passed"] is False
+    assert "AI defect clearance failed" in rule4["reason_en"]
+
+
+def test_closure_acceptance_genuine_repair(client: TestClient, db_session):
+    # Choose a fresh open case that has not had closure attempts yet
+    c = db_session.query(Case).filter(Case.id == "CAS-8903").first()
+    if not c or c.status == "Resolved":
+        c = db_session.query(Case).filter(Case.status != "Resolved", Case.id != "CAS-8901").first()
+    assert c is not None
+    target_id = c.id
+
+    res = client.post(f"/api/cases/{target_id}/closure", data={"demo_preset": "repaired_scene"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert data["verified"] is True
+    assert data["status"] == "Resolved"
+    assert all(r["passed"] for r in data["rules"])
+
+    # Case in database is Resolved
+    db_session.refresh(c)
+    assert c.status == "Resolved"
+    assert c.resolved_at is not None
+
+    # CLOSURE_VERIFIED recorded in ledger
+    last_event = (
+        db_session.query(Event)
+        .filter(Event.case_id == target_id)
+        .order_by(Event.sequence.desc())
+        .first()
+    )
+    assert last_event.event_type == "CLOSURE_VERIFIED"
+
+
+def test_reopen_restarts_deadline_and_timeline_shows_rejected(client: TestClient, db_session):
+    # Test reopen on the case resolved in previous test
+    c = db_session.query(Case).filter(Case.id == "CAS-8903").first()
+    if not c or c.status != "Resolved":
+        c = db_session.query(Case).filter(Case.status == "Resolved").first()
+    assert c is not None
+    target_id = c.id
+
+    res = client.post(f"/api/cases/{target_id}/reopen")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert data["status"] == "Reopened"
+    assert data["current_escalation_level"] == "L2"
+
+    # Database check
+    db_session.refresh(c)
+    assert c.status == "Reopened"
+    assert c.due_resolve_at is not None
+
+    # Timeline of CAS-8901 includes rejected attempts from earlier rejection tests
+    tl_res = client.get("/api/cases/CAS-8901/timeline")
+    assert tl_res.status_code == 200
+    tl_data = tl_res.json()
+    assert "rejected_attempts" in tl_data
+    assert len(tl_data["rejected_attempts"]) >= 1
+
+
+# ============================================================================
+# 10. TEST CRYPTOGRAPHIC LEDGER CHAIN INTEGRITY AFTER ALL ACTIONS
 # ============================================================================
 def test_ledger_chain_integrity_after_workflow(db_session):
     verification = verify_chain(db_session)

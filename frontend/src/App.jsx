@@ -7,6 +7,7 @@ import LandingPage from './pages/LandingPage';
 import AppShell from './pages/AppShell';
 import LedgerStubPage from './pages/LedgerStubPage';
 import ReportWizardPage from './pages/ReportWizardPage';
+import OfficerPortalPage from './pages/OfficerPortalPage';
 import TrackingPage from './pages/TrackingPage';
 import LaunchModal from './components/LaunchModal';
 import TamperBanner from './components/TamperBanner';
@@ -46,7 +47,7 @@ export default function App() {
             <Route index element={<Navigate to="/app/ledger" replace />} />
             <Route path="ledger" element={<LedgerStubPage />} />
             <Route path="report" element={<ReportWizardPage />} />
-            <Route path="officer" element={<LedgerStubPage />} />
+            <Route path="officer" element={<OfficerPortalPage />} />
           </Route>
 
           {/* Public Tracking Routes (No login required) */}

@@ -23,7 +23,7 @@ import imagehash
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import EVIDENCE_STORE_DIR, Base, SessionLocal, engine, get_db
+from database import DATA_DIR, EVIDENCE_STORE_DIR, Base, SessionLocal, engine, get_db
 from detector import detect
 from ledger import append_event, create_anchor, verify_against_anchors, verify_chain
 from models import (
@@ -50,6 +50,7 @@ from workflow import (
     find_nearest_asset,
     generate_case_timeline,
     get_sim_now,
+    haversine_distance_m,
     request_simulated_otp,
     validate_otp_token,
     verify_simulated_otp,
@@ -68,6 +69,8 @@ async def background_deadline_evaluator():
     while True:
         try:
             await asyncio.sleep(2)
+            if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("CIVICLEDGER_TEST"):
+                continue
             db: Session = SessionLocal()
             try:
                 evaluate_deadlines(db)
@@ -112,6 +115,11 @@ app.add_middleware(
 # Serve evidence store images for photo thumbnails & before/after comparisons
 os.makedirs(EVIDENCE_STORE_DIR, exist_ok=True)
 app.mount("/evidence_store", StaticFiles(directory=EVIDENCE_STORE_DIR), name="evidence_store")
+
+# Serve test sample photos for demo shortcuts and test presets
+SAMPLES_DIR = os.path.join(DATA_DIR, "samples")
+if os.path.exists(SAMPLES_DIR):
+    app.mount("/samples", StaticFiles(directory=SAMPLES_DIR), name="samples")
 
 
 @app.get("/api/health")
@@ -624,17 +632,41 @@ def get_case_detail(case_id: str, db: Session = Depends(get_db)):
     )
 
     ev_list = []
+    orig_ev = None
     for ev in c.evidence:
+        if ev.evidence_type == "original" and not orig_ev:
+            orig_ev = ev
         ev_list.append({
             "id": ev.id,
             "evidence_type": ev.evidence_type,
             "file_path": ev.file_path,
             "sha256_hash": ev.sha256_hash,
+            "perceptual_hash": ev.perceptual_hash,
             "confidence": ev.confidence,
             "area_ratio": ev.area_ratio,
             "detector_mode": ev.detector_mode,
+            "defect_type": ev.defect_type,
+            "latitude": ev.latitude,
+            "longitude": ev.longitude,
+            "captured_at": ev.captured_at.isoformat() if ev.captured_at else None,
             "submitted_at": ev.submitted_at.isoformat() if ev.submitted_at else None,
         })
+
+    # Explainable severity score breakdown:
+    # Severity = detection confidence x defect size ratio x road importance x age factor
+    conf_val = orig_ev.confidence if orig_ev and orig_ev.confidence is not None else 0.88
+    ratio_val = orig_ev.area_ratio if orig_ev and orig_ev.area_ratio is not None else 0.16
+    imp_val = c.asset.road_importance if c.asset and c.asset.road_importance is not None else 1.2
+    age_val = 1.25 if (c.contract or c.contractor_liability) else 1.0
+    raw_score = round(conf_val * ratio_val * imp_val * age_val * 10, 2)
+    severity_factors = {
+        "confidence": round(conf_val, 2),
+        "area_ratio": round(ratio_val, 2),
+        "road_importance": round(imp_val, 2),
+        "age_factor": round(age_val, 2),
+        "raw_score": raw_score,
+        "severity_tier": c.severity,
+    }
 
     return {
         "id": c.id,
@@ -642,6 +674,7 @@ def get_case_detail(case_id: str, db: Session = Depends(get_db)):
         "description": c.description,
         "defect_type": c.defect_type,
         "severity": c.severity,
+        "severity_factors": severity_factors,
         "status": c.status,
         "contractor_liability": c.contractor_liability,
         "current_escalation_level": c.current_escalation_level,
@@ -848,6 +881,11 @@ def reopen_case(case_id: str, db: Session = Depends(get_db)):
     sim_now = get_sim_now(db)
     c.status = "Reopened"
     c.current_escalation_level = "L2"
+    c.resolved_at = None
+    # Restart the resolution deadline (e.g. 24h or based on SLA policy)
+    sla = db.query(SlaPolicy).filter(SlaPolicy.severity == c.severity).first()
+    resolve_hours = (sla.resolve_time_days * 24) if sla else 24
+    c.due_resolve_at = sim_now + datetime.timedelta(hours=resolve_hours)
     c.updated_at = sim_now
     db.commit()
 
@@ -858,8 +896,10 @@ def reopen_case(case_id: str, db: Session = Depends(get_db)):
         actor_role="CITIZEN",
         payload={
             "action": "Citizen reported repair incomplete via one-tap 'Still Broken'",
+            "previous_status": "Resolved",
             "reopened_at": sim_now.isoformat(),
             "escalated_to": "L2_EXECUTIVE_ENGINEER",
+            "new_deadline": c.due_resolve_at.isoformat(),
         },
         timestamp=sim_now,
     )
@@ -884,6 +924,419 @@ def reopen_case(case_id: str, db: Session = Depends(get_db)):
         "current_escalation_level": "L2",
         "message": "Case successfully reopened and escalated for executive engineering review.",
     }
+
+
+# ============================================================================
+# 5c. REAL CLOSURE VERIFICATION ENGINE
+# ============================================================================
+@app.post("/api/cases/{case_id}/closure")
+async def verify_case_closure(
+    case_id: str,
+    after_photo: Optional[UploadFile] = File(None),
+    lat: Optional[float] = Form(None),
+    lng: Optional[float] = Form(None),
+    captured_at: Optional[str] = Form(None),
+    demo_preset: Optional[str] = Form(None),
+    actor_role: Optional[str] = Form("OFFICER"),
+    db: Session = Depends(get_db),
+):
+    """
+    POST /api/cases/{id}/closure (multipart: after photo, lat, lng, captured_at).
+    Runs the 4 closure rules in order, collects every failure:
+      1. After-photo GPS within 25 m of original defect location.
+      2. Captured live within 10 minutes of submission and after assignment.
+      3. Perceptual-hash distance from every earlier evidence image > 8 (no reuse).
+      4. Detector finds no defect above 0.5 confidence.
+    Writes CLOSURE_VERIFIED or CLOSURE_REJECTED to the ledger, stores evidence with hashes,
+    and returns plain-language reasons in English and Hindi keys.
+    """
+    c = db.query(Case).filter(Case.id == case_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail=f"Case #{case_id} not found.")
+
+    sim_now = get_sim_now(db)
+
+    # 1. Resolve photo bytes, filename, coordinates, and timestamp
+    # Handle demo shortcuts or direct file uploads
+    photo_bytes: Optional[bytes] = None
+    photo_filename: str = "after_repair.jpg"
+    samples_dir = os.path.join(DATA_DIR, "samples")
+
+    if demo_preset:
+        # Pre-configured demo test scenarios using real files
+        if demo_preset == "reuse_old_photo":
+            orig_ev = db.query(Evidence).filter(Evidence.case_id == c.id, Evidence.evidence_type == "original").first()
+            if orig_ev and orig_ev.file_path:
+                rel_clean = orig_ev.file_path.lstrip("/").replace("evidence_store/", "")
+                ev_disk_path = os.path.join(EVIDENCE_STORE_DIR, rel_clean)
+                if os.path.exists(ev_disk_path):
+                    with open(ev_disk_path, "rb") as f_in:
+                        photo_bytes = f_in.read()
+                    photo_filename = rel_clean
+            if not photo_bytes:
+                sample_pothole = os.path.join(samples_dir, "pothole1.jpg")
+                if os.path.exists(sample_pothole):
+                    with open(sample_pothole, "rb") as f_in:
+                        photo_bytes = f_in.read()
+                    photo_filename = "pothole1.jpg"
+            lat = c.latitude if lat is None else lat
+            lng = c.longitude if lng is None else lng
+            captured_at = sim_now.isoformat() if not captured_at else captured_at
+
+        elif demo_preset == "wrong_location":
+            clean_sample = os.path.join(samples_dir, "clean and pothole free road.jpg")
+            if os.path.exists(clean_sample):
+                with open(clean_sample, "rb") as f_in:
+                    photo_bytes = f_in.read()
+                photo_filename = "clean and pothole free road.jpg"
+            # Coordinates offset ~330m away (breaches 25m boundary)
+            lat = c.latitude + 0.003
+            lng = c.longitude + 0.003
+            captured_at = sim_now.isoformat() if not captured_at else captured_at
+
+        elif demo_preset == "defect_still_visible":
+            pothole_sample = os.path.join(samples_dir, "pothole1.jpg")
+            if os.path.exists(pothole_sample):
+                with open(pothole_sample, "rb") as f_in:
+                    photo_bytes = f_in.read()
+                photo_filename = "pothole1.jpg"
+            lat = c.latitude if lat is None else lat
+            lng = c.longitude if lng is None else lng
+            captured_at = sim_now.isoformat() if not captured_at else captured_at
+
+        elif demo_preset == "stale_timestamp":
+            clean_sample = os.path.join(samples_dir, "clean and pothole free road.jpg")
+            if os.path.exists(clean_sample):
+                with open(clean_sample, "rb") as f_in:
+                    photo_bytes = f_in.read()
+                photo_filename = "clean and pothole free road.jpg"
+            lat = c.latitude if lat is None else lat
+            lng = c.longitude if lng is None else lng
+            captured_at = (sim_now - datetime.timedelta(hours=2)).isoformat()
+
+        elif demo_preset in ["repaired_scene", "genuine_repair"]:
+            clean_sample = os.path.join(samples_dir, "clean and pothole free road.jpg")
+            if os.path.exists(clean_sample):
+                with open(clean_sample, "rb") as f_in:
+                    photo_bytes = f_in.read()
+                photo_filename = "clean and pothole free road.jpg"
+            lat = c.latitude if lat is None else lat
+            lng = c.longitude if lng is None else lng
+            captured_at = sim_now.isoformat() if not captured_at else captured_at
+
+    if not photo_bytes and after_photo:
+        photo_bytes = await after_photo.read()
+        photo_filename = after_photo.filename or "after_repair.jpg"
+
+    if not photo_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="After-photo evidence is required. Please upload an image or select a demo shortcut.",
+        )
+
+    # Defaults for coordinates and timestamp if not provided
+    req_lat = lat if lat is not None else c.latitude
+    req_lng = lng if lng is not None else c.longitude
+
+    # Parse capture datetime
+    try:
+        if captured_at:
+            clean_str = captured_at.replace("Z", "+00:00")
+            if "+" in clean_str:
+                captured_dt = datetime.datetime.fromisoformat(clean_str).replace(tzinfo=None)
+            else:
+                captured_dt = datetime.datetime.fromisoformat(clean_str)
+        else:
+            captured_dt = sim_now
+    except Exception:
+        captured_dt = sim_now
+
+    # -------------------------------------------------------------------------
+    # RULE 1: After-photo GPS within 25 m of the original
+    # -------------------------------------------------------------------------
+    dist_m = haversine_distance_m(c.latitude, c.longitude, req_lat, req_lng)
+    rule1_passed = dist_m <= 25.0
+    rule1 = {
+        "rule": 1,
+        "key": "gps_proximity",
+        "name_en": "GPS Proximity (≤ 25m)",
+        "name_hi": "जीपीएस निकटता (≤ 25 मीटर)",
+        "passed": rule1_passed,
+        "measured_distance_m": round(dist_m, 1),
+        "allowed_radius_m": 25.0,
+        "reason_en": (
+            f"Verified within repair site boundary ({dist_m:.1f}m from defect coordinates)."
+            if rule1_passed
+            else f"GPS verification failed: Photo taken {dist_m:.1f}m away from defect site (allowed: ≤ 25m)."
+        ),
+        "reason_hi": (
+            f"मरम्मत स्थल के सही दायरे में सत्यापित (समस्या स्थल से दूरी: {dist_m:.1f} मीटर)।"
+            if rule1_passed
+            else f"जीपीएस सत्यापन विफल: फोटो समस्या स्थल से {dist_m:.1f} मीटर दूर ली गई है (अनुमति: ≤ 25 मीटर)।"
+        ),
+    }
+
+    # -------------------------------------------------------------------------
+    # RULE 2: Captured live within 10 minutes of submission and after assignment
+    # -------------------------------------------------------------------------
+    rule2_passed = True
+    rule2_reason_en = "Captured live on site within valid 10-minute window."
+    rule2_reason_hi = "मान्य 10 मिनट के भीतर मौके पर लाइव कैप्चर किया गया।"
+
+    if c.opened_at and captured_dt < (c.opened_at - datetime.timedelta(seconds=60)):
+        rule2_passed = False
+        rule2_reason_en = "Timestamp verification failed: Photo was captured before defect was reported/assigned."
+        rule2_reason_hi = "समय सत्यापन विफल: फोटो समस्या की रिपोर्ट दर्ज होने से पहले ली गई थी।"
+    else:
+        age_seconds = (sim_now - captured_dt).total_seconds()
+        if age_seconds > 600:
+            rule2_passed = False
+            minutes_ago = int(age_seconds // 60)
+            rule2_reason_en = f"Live capture verification failed: Photo must be taken live within 10 minutes of submission (captured {minutes_ago}m ago)."
+            rule2_reason_hi = f"लाइव कैप्चर सत्यापन विफल: फोटो सबमिशन के 10 मिनट के भीतर ली जानी चाहिए ({minutes_ago} मिनट पुरानी)।"
+        elif age_seconds < -60:
+            rule2_passed = False
+            rule2_reason_en = "Timestamp verification failed: Photo capture timestamp is in the future."
+            rule2_reason_hi = "समय सत्यापन विफल: फोटो कैप्चर का समय भविष्य का है।"
+
+    rule2 = {
+        "rule": 2,
+        "key": "live_timestamp",
+        "name_en": "Live Capture Window (≤ 10 min)",
+        "name_hi": "लाइव कैप्चर विंडो (≤ 10 मिनट)",
+        "passed": rule2_passed,
+        "captured_at": captured_dt.isoformat(),
+        "reason_en": rule2_reason_en,
+        "reason_hi": rule2_reason_hi,
+    }
+
+    # -------------------------------------------------------------------------
+    # RULE 3: Perceptual-hash distance from every earlier evidence image > 8 (no reuse)
+    # -------------------------------------------------------------------------
+    curr_sha256 = hashlib.sha256(photo_bytes).hexdigest()
+    try:
+        pil_img = Image.open(io.BytesIO(photo_bytes))
+        curr_phash = imagehash.phash(pil_img)
+    except Exception:
+        curr_phash = None
+
+    rule3_passed = True
+    rule3_reason_en = "No image reuse detected; unique post-repair photographic evidence."
+    rule3_reason_hi = "फोटो का कोई पुन: उपयोग नहीं पाया गया; अद्वितीय मरम्मत साक्ष्य।"
+
+    existing_evidences = db.query(Evidence).filter(Evidence.case_id == c.id).all()
+    for ev in existing_evidences:
+        if ev.sha256_hash and ev.sha256_hash == curr_sha256:
+            rule3_passed = False
+            rule3_reason_en = "Image reuse detected: File hash is identical to earlier evidence on this case."
+            rule3_reason_hi = "फोटो का पुन: उपयोग पकड़ा गया: फाइल पहले की साक्ष्य फोटो से बिल्कुल मेल खाती है।"
+            break
+        if ev.perceptual_hash and curr_phash:
+            try:
+                ev_ph = imagehash.hex_to_hash(ev.perceptual_hash)
+                h_dist = curr_phash - ev_ph
+                if h_dist <= 8:
+                    rule3_passed = False
+                    sim_pct = int(round((1.0 - (h_dist / 64.0)) * 100))
+                    rule3_reason_en = f"Image reuse detected: Visual fingerprint matches earlier evidence (perceptual distance {h_dist} ≤ 8, similarity {sim_pct}%)."
+                    rule3_reason_hi = f"फोटो का पुन: उपयोग पकड़ा गया: दृश्य समानता {sim_pct}% (दूरी {h_dist} ≤ 8)।"
+                    break
+            except Exception:
+                pass
+
+    rule3 = {
+        "rule": 3,
+        "key": "no_image_reuse",
+        "name_en": "No Photo Reuse (pHash Distance > 8)",
+        "name_hi": "पुरानी फोटो का पुनः उपयोग नहीं (pHash > 8)",
+        "passed": rule3_passed,
+        "sha256_hash": curr_sha256,
+        "perceptual_hash": str(curr_phash) if curr_phash else None,
+        "reason_en": rule3_reason_en,
+        "reason_hi": rule3_reason_hi,
+    }
+
+    # -------------------------------------------------------------------------
+    # RULE 4: Detector finds no defect above 0.5 confidence
+    # -------------------------------------------------------------------------
+    det = detect(photo_bytes, filename=photo_filename)
+    rule4_passed = True
+    rule4_reason_en = "AI computer vision re-inspection confirms defect has been cleared."
+    rule4_reason_hi = "एआई कंप्यूटर विजन निरीक्षण पुष्टि करता है कि दोष दूर कर दिया गया है।"
+
+    defect_detected = det.get("type")
+    conf_val = det.get("confidence", 0.0)
+
+    if conf_val >= 0.50 and defect_detected not in [None, "clean", "unrelated"]:
+        rule4_passed = False
+        conf_pct = int(round(conf_val * 100))
+        rule4_reason_en = f"AI defect clearance failed: {defect_detected.capitalize()} still detected in scene ({conf_pct}% confidence ≥ 50%)."
+        rule4_reason_hi = f"एआई निरीक्षण विफल: मौके पर अभी भी {conf_pct}% आत्मविश्वास के साथ {defect_detected} दिखाई दे रहा है।"
+
+    rule4 = {
+        "rule": 4,
+        "key": "ai_defect_clearance",
+        "name_en": "AI Defect Clearance (< 50% defect confidence)",
+        "name_hi": "एआई दोष निकासी (< 50% आत्मविश्वास)",
+        "passed": rule4_passed,
+        "defect_detected": defect_detected,
+        "confidence": conf_val,
+        "reason_en": rule4_reason_en,
+        "reason_hi": rule4_reason_hi,
+    }
+
+    # -------------------------------------------------------------------------
+    # EVALUATION & PERSISTENCE (EVIDENCE & LEDGER)
+    # -------------------------------------------------------------------------
+    rules = [rule1, rule2, rule3, rule4]
+    verified = all(r["passed"] for r in rules)
+    failed_rules = [r["key"] for r in rules if not r["passed"]]
+    reasons_en = [r["reason_en"] for r in rules if not r["passed"]]
+    reasons_hi = [r["reason_hi"] for r in rules if not r["passed"]]
+
+    # Save evidence file to disk
+    ext = os.path.splitext(photo_filename)[1] or ".jpg"
+    target_fname = f"{curr_sha256}{ext}"
+    target_path = os.path.join(EVIDENCE_STORE_DIR, target_fname)
+    if not os.path.exists(target_path):
+        with open(target_path, "wb") as f_out:
+            f_out.write(photo_bytes)
+
+    evidence_rel_path = f"/evidence_store/{target_fname}"
+
+    if verified:
+        # Verified closure
+        db.add(
+            Evidence(
+                case_id=c.id,
+                evidence_type="after_repair",
+                file_path=evidence_rel_path,
+                sha256_hash=curr_sha256,
+                perceptual_hash=str(curr_phash) if curr_phash else None,
+                latitude=req_lat,
+                longitude=req_lng,
+                captured_at=captured_dt,
+                submitted_at=sim_now,
+                confidence=det.get("confidence"),
+                area_ratio=det.get("area_ratio"),
+                defect_type=det.get("type"),
+                detector_mode=det.get("mode", "mock"),
+            )
+        )
+        c.status = "Resolved"
+        c.resolved_at = sim_now
+        c.updated_at = sim_now
+        db.commit()
+
+        append_event(
+            db=db,
+            case_id=c.id,
+            event_type="CLOSURE_VERIFIED",
+            actor_role=actor_role or "OFFICER",
+            payload={
+                "action": "Closure verified by automated AI inspection",
+                "rules_checked": 4,
+                "passed_all": True,
+                "distance_m": round(dist_m, 1),
+                "detector_type": det.get("type"),
+                "detector_confidence": det.get("confidence"),
+                "resolved_at": sim_now.isoformat(),
+            },
+            evidence_hash=curr_sha256,
+            timestamp=sim_now,
+        )
+
+        db.add(
+            Notification(
+                case_id=c.id,
+                recipient_role="CITIZEN",
+                recipient_contact=c.citizen_phone or "+91-9876543210",
+                message=f"CivicLedger: Case #{c.id} has been repaired and verified by AI. Check your repair at /track/{c.id}",
+                channel="SMS (simulated)",
+                status="SENT",
+                sent_at=sim_now,
+            )
+        )
+        db.commit()
+
+        return {
+            "ok": True,
+            "verified": True,
+            "case_id": c.id,
+            "status": "Resolved",
+            "rules": rules,
+            "reasons": [],
+            "reasons_en": [],
+            "reasons_hi": [],
+            "evidence_hash": curr_sha256,
+            "file_path": evidence_rel_path,
+            "message": "Closure verified and case marked Resolved.",
+        }
+
+    else:
+        # Rejected closure
+        db.add(
+            Evidence(
+                case_id=c.id,
+                evidence_type="rejected_closure",
+                file_path=evidence_rel_path,
+                sha256_hash=curr_sha256,
+                perceptual_hash=str(curr_phash) if curr_phash else None,
+                latitude=req_lat,
+                longitude=req_lng,
+                captured_at=captured_dt,
+                submitted_at=sim_now,
+                confidence=det.get("confidence"),
+                defect_type=det.get("type"),
+                detector_mode=det.get("mode", "mock"),
+            )
+        )
+        c.updated_at = sim_now
+        db.commit()
+
+        append_event(
+            db=db,
+            case_id=c.id,
+            event_type="CLOSURE_REJECTED",
+            actor_role=actor_role or "OFFICER",
+            payload={
+                "action": "Closure attempt rejected by verification rules",
+                "failed_rules": failed_rules,
+                "reasons_en": reasons_en,
+                "reasons_hi": reasons_hi,
+                "distance_m": round(dist_m, 1),
+                "attempted_at": sim_now.isoformat(),
+            },
+            evidence_hash=curr_sha256,
+            timestamp=sim_now,
+        )
+
+        db.add(
+            Notification(
+                case_id=c.id,
+                recipient_role="OFFICER",
+                recipient_contact="field_officer@sim-fbd.gov.in",
+                message=f"CLOSURE REJECTED: Case #{c.id} failed verification rules: {', '.join(reasons_en)}",
+                channel="SYSTEM",
+                status="SENT",
+                sent_at=sim_now,
+            )
+        )
+        db.commit()
+
+        return {
+            "ok": False,
+            "verified": False,
+            "case_id": c.id,
+            "status": c.status,
+            "rules": rules,
+            "reasons": reasons_en,
+            "reasons_en": reasons_en,
+            "reasons_hi": reasons_hi,
+            "evidence_hash": curr_sha256,
+            "file_path": evidence_rel_path,
+            "message": f"Closure rejected: {'; '.join(reasons_en)}",
+        }
 
 
 @app.get("/api/track/{token_or_id}")

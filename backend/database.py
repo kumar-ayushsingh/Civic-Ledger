@@ -9,7 +9,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 EVIDENCE_STORE_DIR = os.path.join(DATA_DIR, "evidence_store")
 os.makedirs(EVIDENCE_STORE_DIR, exist_ok=True)
 
-DB_PATH = os.path.join(DATA_DIR, "civicledger.db")
+DB_PATH = os.environ.get("CIVICLEDGER_DB_PATH", os.path.join(DATA_DIR, "civicledger.db"))
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(
